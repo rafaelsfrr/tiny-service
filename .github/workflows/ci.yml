@@ -1,0 +1,79 @@
+name: CI Pipeline
+
+on:
+  pull_request:
+    branches: [ master ]
+  push:
+    branches: [ master ]
+
+jobs:
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          export PYTHONPATH=.
+          pytest tests/
+
+  build_and_scan:
+    name: Build & Scan Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -t tiny-api:${{ github.sha }} .
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'tiny-api:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+  deploy-to-kind:
+    name: Deploy to kind & Verify
+    runs-on: ubuntu-latest
+    needs: [test, build_and_scan]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.10.0
+        with:
+          node_image: kindest/node:v1.27.3
+
+      - name: Build Docker image
+        run: |
+          docker build -t tiny-api:latest .
+      
+      - name: Load image into kind
+        run: |
+          kind load docker-image tiny-api:latest
+
+      - name: Deploy application
+        run: |
+          kubectl apply -f kubernetes/
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/tiny-api-deployment --timeout=90s
